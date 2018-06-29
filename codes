@@ -1,0 +1,445 @@
+library(xts)
+library(TTR)
+library(quantmod)
+library(PerformanceAnalytics)
+library(urca)
+library(forecast)
+library(fArma)
+library(tseries)
+library(fGarch)
+
+
+setwd("C:/Users/49859/Desktop")
+
+# get stock data from yahoo finance
+tickers <- c("NFLX", "AMZN", "LRCX", "PLD", "NWL", "AMD", "ISRG", "VRTX", "MGM", "TTWO", 
+             "UNH", "GOOG", "ALXN", "GE", "CRM", "MCHP", "INTU", "BKNG", "CSCO")
+getSymbols(Symbols = tickers, from = "1999-12-01", to = "2016-12-31", periodicity = "monthly", scr = "yahoo")
+
+benchmark <- "^GSPC"
+getSymbols(Symbols = benchmark, from = "1999-12-01", to = "2016-12-31", periodicity = "monthly")
+benchmark_ret <- ROC(Ad(GSPC))[-1,]
+names(benchmark_ret) <- "S&P500"
+
+# merge data frame
+df <- merge(Ad(NFLX), Ad(AMZN), Ad(LRCX), Ad(PLD), Ad(NWL), Ad(AMD), Ad(ISRG), 
+            Ad(VRTX), Ad(MGM), Ad(TTWO), Ad(UNH), Ad(GOOG), Ad(ALXN), 
+            Ad(GE),Ad(CRM), Ad(MCHP), Ad(INTU), Ad(BKNG), Ad(CSCO))
+names(df) <- c("NFLX", "AMZN", "LRCX", "PLD", "NWL", "AMD", "ISRG", "VRTX", "MGM", "TTWO", 
+               "UNH", "GOOG", "ALXN", "GE", "CRM", "MCHP", "INTU", "BKNG", "CSCO")
+head(df)
+# get Fama-French data
+ffdata <- read.csv("F-F_Research_Data_Factors.csv", skip = 3, header = T)
+
+# get rid of useless data
+head(ffdata)
+ffdata1 <- ffdata[ffdata$X==200001, ]
+ffdata1
+tail(ffdata,20)
+
+ffdata <- ffdata[-c(1:882,1087:1098),]
+
+
+##### CAPM 
+
+# calculate returns
+df <- ROC(df)[-1,]
+
+# create response and explanatory variable
+
+df.y <- df-ffdata$RF
+df.x <- ffdata$Mkt.RF
+
+fit.capm <- rep(0, ncol(df.y))
+for (i in 1:ncol(df.y)) {
+  fit.capm[i] <- lm(df.y[,i] ~ df.x)
+  
+}
+
+names(fit.capm) <- tickers
+
+# outcomes
+fit.capm
+
+##### FF-Model
+
+fit.ff <- rep(0, ncol(df.y))
+for (i in 1:ncol(df.y)) {
+  fit.ff[i] <- lm(df.y[,i] ~ df.x + ffdata$SMB + ffdata$HML)
+  
+}
+
+names(fit.ff) <- tickers
+
+# outcomes
+fit.ff
+
+
+
+##### Pair Trading
+
+prices <- merge(Ad(NFLX), Ad(AMZN), Ad(LRCX), Ad(PLD), Ad(NWL), Ad(AMD), Ad(ISRG), 
+            Ad(VRTX), Ad(MGM), Ad(TTWO), Ad(UNH), Ad(GOOG), Ad(ALXN), 
+            Ad(GE),Ad(CRM), Ad(MCHP), Ad(INTU), Ad(BKNG), Ad(CSCO))
+names(prices) <- c("NFLX", "AMZN", "LRCX", "PLD", "NWL", "AMD", "ISRG", "VRTX", "MGM", "TTWO", 
+               "UNH", "GOOG", "ALXN", "GE", "CRM", "MCHP", "INTU", "BKNG", "CSCO")
+
+
+# check correlation
+z <- cor(prices, use = "na.or.complete")
+zdf <- as.data.frame(as.table(z))
+zz <- zdf[order(zdf$Freq, decreasing = T),]
+dd <- zz[-which(zz$Freq==1),]
+
+
+### Pair Trading 8 pairs
+# INTU & CRM
+
+# delete NA data
+len.1 <- length(which(complete.cases(prices$CRM)== FALSE))
+
+prices.1 <- log(merge(prices$INTU[-c(1:len.1),],prices$CRM[-c(1:len.1),]))
+
+plot(prices.1$INTU, main = "INTU&CRM", col ="black", ylim = c(0,6))
+lines(prices.1$CRM, col ="red")
+
+
+# OLS
+lm.1 <- lm(INTU ~ CRM, data = prices.1)
+summary(lm.1)
+
+## cointegration test
+
+INTU_adf <- ur.df(prices.1$INTU, type = "drift")
+summary(INTU_adf)
+
+CRM_adf<- ur.df(prices.1$CRM, type = "drift")
+summary(CRM_adf)
+
+summary(ur.df(residuals(lm.1), type = "none"))
+
+spread.1 <- prices.1$INTU - summary(lm.1)$coefficient[1,1] - summary(lm.1)$coefficient[2,1]*prices.1$CRM
+
+plot(coredata(spread.1), main = "Spread of INTU&CRM", ylab = "spread", xlab= "time" ,ylim = c(-0.5,0.5), type = "l")
+spread.mean.1 <- mean(spread.1)
+spread.sd.1 <- sd(spread.1)
+abline(h = spread.mean.1, col = 'red')
+abline(h = spread.mean.1+ spread.sd.1, col = 'blue')
+abline(h = spread.mean.1- spread.sd.1, col = 'blue')
+
+
+Get_PairTrading_Return <- function(y, x){
+  
+  len.y <- length(which(complete.cases(y)== FALSE))
+  len.x <- length(which(complete.cases(x)== FALSE))
+  
+  if(len.y > len.x){
+  
+    prices <- log(merge(y[-c(1:len.y),],x[-c(1:len.y),]))
+  
+  }else {
+    
+    prices <- log(merge(y[-c(1:len.x),],x[-c(1:len.x),]))
+    
+  }  
+  
+  lm.fit <- lm(prices[,1] ~ prices[,2])
+  
+  alpha <- summary(lm.fit)$coefficient[1,1]
+  
+  beta <- summary(lm.fit)$coefficient[2,1]
+  
+  spread <- prices[,1] - alpha - beta * prices[,2]
+  
+  spread.mean <- mean(spread)
+  spread.sd <- sd(spread)
+  
+  signal <- data.frame(rep(0,nrow(spread)),rep(0,nrow(spread)))
+  names(signal) <- c("X", "Y")
+  
+  for(i in 1:nrow(spread)){
+    
+    if(spread[i] > spread.mean + 0.2*spread.sd){
+      signal[,1][i] <- 1
+      
+    }else if(spread[i] < spread.mean - 0.2*spread.sd){
+      signal[,2][i] <- 1
+    }
+  }
+
+signal <- xts(signal, order.by = index(spread))
+ret <- diff(prices)[,1] * signal[,1] + diff(prices)[,2] * signal[,2]
+names(ret) <- "Pair Trading"
+ret <- merge(ret,diff(prices)[,1],diff(prices)[,2])
+ret <- ret[-1,]
+#return(merge(spread,spread.mean+spread.sd, spread.mean- spread.sd))
+return(ret)
+}
+
+# INTU & CRM
+ret.1 <- Get_PairTrading_Return(x = prices$CRM, y = prices$INTU)
+charts.PerformanceSummary(ret.1)
+
+# UNH & NWL
+ret.2 <- Get_PairTrading_Return(x = prices$NWL, y = prices$UNH)
+charts.PerformanceSummary(ret.2)
+
+# BKNG & ALXN
+ret.3 <- Get_PairTrading_Return(x = prices$ALXN, y = prices$BKNG)
+charts.PerformanceSummary(ret.3)
+
+# GOOG & AMZN
+ret.4 <- Get_PairTrading_Return(x = prices$AMZN, y = prices$GOOG)
+charts.PerformanceSummary(ret.4)
+
+# MCHP & LRCX
+ret.5 <- Get_PairTrading_Return(x = prices$LRCX, y = prices$MCHP)
+charts.PerformanceSummary(ret.5)
+
+# GE & PLD
+ret.6 <- Get_PairTrading_Return(x = prices$PLD, y = prices$GE)
+charts.PerformanceSummary(ret.6)
+
+# VRTX & NFLX
+ret.7 <- Get_PairTrading_Return(x = prices$NFLX, y = prices$VRTX)
+charts.PerformanceSummary(ret.7)
+
+
+
+##### ARIMA+GARCH
+
+arima_test <- function(x){
+
+a.111 <- arima(x, order = c(1,1,1))["aic"]
+a.211 <- arima(x, order = c(2,1,1))["aic"]
+a.112 <- arima(x, order = c(1,1,2))["aic"]
+a.212 <- arima(x, order = c(2,1,2))["aic"]
+a.011 <- arima(x, order = c(0,1,1))["aic"]
+a.110 <- arima(x, order = c(1,1,0))["aic"]
+a.012 <- arima(x, order = c(0,1,2))["aic"]
+a.210 <- arima(x, order = c(2,1,0))["aic"]
+a_df <- data.frame(a.111,a.211,a.112,a.212,a.011,a.110,a.012,a.210)
+names(a_df) <- c("a.111","a.211","a.112","a.212","a.011","a.110","a.012","a.210")
+
+
+return(a_df)
+
+}
+
+arima_test(df$AMD)
+
+# MA(1) is the best model
+
+garch_arma <- garchFit(~arma(1,1)+garch(1,1), data = df$AMZN[1:4,], trace = F)
+
+summary(garch_arma)
+predict(garch_arma, 1, doplot = F)$meanForecast
+
+
+Get_ARMA_GARCH <- function(x){
+  x <- na.omit(x)
+  signal <- rep(0, nrow(x)+1)
+  threshold <- rep(0, nrow(x)+1)
+  
+for (i in 1:(nrow(x)-11)) {
+  
+  threshold[i+12] <- as.numeric(predict(garchFit(~arma(1,1)+garch(1,1), data = x[1:(i+11),], trace = F), 1, doplot = F)$meanForecast)
+
+  if(threshold[i+12] > 0){
+    signal[i+12] <- 1
+  }else if(threshold[i+12] < 0){
+    signal[i+12] <- 0
+  }
+  
+}
+  
+signal <- signal[-length(signal)]
+signal <- xts(signal, order.by = index(x))
+ret<- x*signal
+names(ret) <- "ARMA-GARCH"  
+ret <- merge(ret, x, benchmark_ret[-(1:(nrow(benchmark_ret)-nrow(x))),])
+return(ret)
+  
+}
+
+
+ret.AMD <- Get_ARMA_GARCH(df$AMD)
+charts.PerformanceSummary(ret.AMD)
+
+ret.ISRG <- Get_ARMA_GARCH(df$ISRG)
+charts.PerformanceSummary(ret.ISRG)
+
+ret.TTWO <- Get_ARMA_GARCH(df$TTWO)
+charts.PerformanceSummary(ret.TTWO)
+
+
+ret.GOOG <- Get_ARMA_GARCH(df$GOOG)
+charts.PerformanceSummary(ret.GOOG)
+
+ret.AMZN <- Get_ARMA_GARCH(df$AMZN)
+charts.PerformanceSummary(ret.AMZN)
+
+ret.GE <- Get_ARMA_GARCH(df$GE)
+charts.PerformanceSummary(ret.GE)
+
+ret.PLD <- Get_ARMA_GARCH(df$PLD)
+charts.PerformanceSummary(ret.PLD)
+
+ret.XRX <- Get_ARMA_GARCH(df$XRX)
+charts.PerformanceSummary(ret.XRX)
+
+ret.MGM <- Get_ARMA_GARCH(df$MGM)
+charts.PerformanceSummary(ret.MGM)
+
+
+
+### Weights on each stocks
+
+### Pair Trading Group (5 pairs)
+
+# INTU & CRM
+ret.1 <- Get_PairTrading_Return(x = prices$CRM, y = prices$INTU)
+charts.PerformanceSummary(ret.1)
+
+# UNH & NWL
+ret.2 <- Get_PairTrading_Return(x = prices$NWL, y = prices$UNH)
+charts.PerformanceSummary(ret.2)
+
+# BKNG & ALXN
+ret.3 <- Get_PairTrading_Return(x = prices$ALXN, y = prices$BKNG)
+charts.PerformanceSummary(ret.3)
+
+# MCHP & LRCX
+ret.5 <- Get_PairTrading_Return(x = prices$LRCX, y = prices$MCHP)
+charts.PerformanceSummary(ret.5)
+
+# VRTX & NFLX
+ret.7 <- Get_PairTrading_Return(x = prices$NFLX, y = prices$VRTX)
+charts.PerformanceSummary(ret.7)
+
+### ARIMA-GARCH Group
+
+
+
+ret.ISRG <- Get_ARMA_GARCH(df$ISRG)
+charts.PerformanceSummary(ret.ISRG)
+
+ret.MGM <- Get_ARMA_GARCH(df$MGM)
+charts.PerformanceSummary(ret.MGM)
+
+ret.AMZN <- Get_ARMA_GARCH(df$AMZN)
+charts.PerformanceSummary(ret.AMZN)
+
+# portfolio Performance
+
+port <- merge(ret.1[,1], ret.2[,1], ret.3[,1], ret.5[,1], ret.7[,1], ret.ISRG[,1], ret.MGM[,1], ret.AMZN[,1])
+port_ret <- Return.portfolio(port, rebalance_on = "months", verbose = FALSE)
+
+Return.cumulative(port_ret)
+
+charts.PerformanceSummary(merge(port_ret, benchmark_ret),methods = "HistoricalVaR")
+
+
+
+SharpeRatio(port_ret, FUN = "StdDev")
+VaR(port_ret, method = "historical")
+
+
+SharpeRatio(benchmark_ret, FUN = "StdDev")
+VaR(benchmark_ret, method = "historical")
+
+
+##### Back-testing
+
+getSymbols(Symbols = tickers, from = "2015-12-01", to = "2017-12-31", periodicity = "monthly")
+prices.bt.arma <- merge(Ad(ISRG),Ad(AMZN), Ad(MGM))
+names(prices.bt.arma) <- c("ISRG", "AMZN", "MGM")
+head(prices.bt.arma)
+df.bt.arma <- ROC(prices.bt.arma)[-1,]
+head(df.bt.arma)
+getSymbols(Symbols = tickers, from = "2016-11-01", to = "2017-12-31", periodicity = "monthly")
+
+prices.bt.pt <- merge(Ad(NFLX), Ad(LRCX), Ad(NWL), Ad(VRTX), Ad(UNH),Ad(ALXN),Ad(CRM), Ad(MCHP), Ad(INTU),Ad(BKNG))
+names(prices.bt.pt) <- c("NFLX","LRCX", "NWL", "VRTX","UNH","ALXN", "CRM", "MCHP", "INTU", "BKNG")
+
+getSymbols(Symbols = benchmark, from = "2016-12-01", to = "2017-12-31", periodicity = "monthly")
+benchmark_ret.bt <- ROC(Ad(GSPC))[-1,]
+names(benchmark_ret.bt) <- "S&P500"
+head(benchmark_ret.bt)
+
+### Pair Trading Group (5 pairs)
+
+
+# INTU & CRM
+ret.1.bt <- Get_PairTrading_Return(x = prices.bt.pt$CRM, y = prices.bt.pt$INTU)
+charts.PerformanceSummary(ret.1.bt)
+
+# UNH & NWL
+ret.2.bt <- Get_PairTrading_Return(x = prices.bt.pt$NWL, y = prices.bt.pt$UNH)
+charts.PerformanceSummary(ret.2.bt)
+
+# BKNG & ALXN
+ret.3.bt <- Get_PairTrading_Return(x = prices.bt.pt$ALXN[c(1:7),], y = prices.bt.pt$BKNG[c(1:7),])
+charts.PerformanceSummary(ret.3.bt)
+
+# MCHP & LRCX
+ret.5.bt <- Get_PairTrading_Return(x = prices.bt.pt$LRCX, y = prices.bt.pt$MCHP)
+charts.PerformanceSummary(ret.5.bt)
+
+# VRTX & NFLX
+ret.7.bt <- Get_PairTrading_Return(x = prices.bt.pt$NFLX, y = prices.bt.pt$VRTX)
+charts.PerformanceSummary(ret.7.bt)
+
+### ARIMA-GARCH Group
+
+Get_ARMA_GARCH.bt <- function(x){
+  x <- na.omit(x)
+  signal <- rep(0, nrow(x)+1)
+  threshold <- rep(0, nrow(x)+1)
+  
+  for (i in 1:(nrow(x)-11)) {
+    
+    threshold[i+12] <- as.numeric(predict(garchFit(~arma(1,1)+garch(1,1), data = x[1:(i+11),], trace = F), 1, doplot = F)$meanForecast)
+    
+    if(threshold[i+12] > 0){
+      signal[i+12] <- 1
+    }else if(threshold[i+12] < 0){
+      signal[i+12] <- 0
+    }
+    
+  }
+  
+  signal <- signal[-length(signal)]
+  signal <- xts(signal, order.by = index(x))
+  ret<- x*signal
+  names(ret) <- "ARMA-GARCH"  
+  ret <- merge(ret, x, benchmark_ret.bt)
+  return(ret[-c(1:12),])
+  
+}
+
+
+ret.ISRG.bt <- Get_ARMA_GARCH.bt(df.bt.arma$ISRG)
+charts.PerformanceSummary(ret.ISRG.bt)
+
+ret.MGM.bt <- Get_ARMA_GARCH.bt(df.bt.arma$MGM)
+charts.PerformanceSummary(ret.MGM.bt)
+
+ret.AMZN.bt <- Get_ARMA_GARCH.bt(df.bt.arma$AMZN)
+charts.PerformanceSummary(ret.AMZN.bt)
+
+# portfolio Performance
+
+port.bt <- merge(ret.1.bt[,1], ret.2.bt[,1], ret.3.bt[,1], ret.5.bt[,1], ret.7.bt[,1], ret.ISRG.bt[,1], ret.MGM.bt[,1], ret.AMZN.bt[,1])
+port_ret.bt <- Return.portfolio(port.bt, rebalance_on = "months", verbose = FALSE)
+
+Return.cumulative(port_ret.bt)
+Return.cumulative(benchmark_ret.bt)
+
+charts.PerformanceSummary(merge(port_ret.bt, benchmark_ret.bt), methods = "HistoricalVaR")              
+
+SharpeRatio(port_ret.bt, FUN = "StdDev")
+VaR(port_ret.bt)
+
+SharpeRatio(benchmark_ret.bt, FUN = "StdDev")
+VaR(benchmark_ret.bt)
